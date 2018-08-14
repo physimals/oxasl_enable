@@ -1,7 +1,24 @@
 #!/usr/bin/env python
-# ENABLE package for ASL
+"""
+OXASL_ENABLE
+============
 
-import os, sys
+Enhancement of Automated Blooed Estimates for ASL-MRI
+
+ENABLE is a tool designed to assess quality of images in multi-repeat
+ASL data and discard repeats of low quality with the aim of increasing
+the overall quality of the data set.
+
+OXASL_ENABLE is a Python implementation working within the OXASL
+framework, and is hence based around the AslImage and Workspace classes.
+
+A command line tool is provided (``oxasl_enable``), also the API may be
+used directly. The main method is ``enable`` - see this method's 
+documentation for the workspace attributes that should be set.
+"""
+
+import os
+import sys
 import glob
 import shutil
 import math
@@ -14,18 +31,47 @@ import scipy.stats
 from fsl.data.image import Image
 import fsl.wrappers as fsl
 
-from oxasl import AslImage, Workspace
-from oxasl.struc import StructuralImageOptions, preproc_struc, segment
+from oxasl import AslImage
+import oxasl.struc as struc
 from oxasl.options import AslOptionParser, OptionCategory, IgnorableOptionGroup, GenericOptions
 from oxasl.reg import reg_asl2struc
 from oxasl.image import AslImageOptions
-from oxasl.reporting import Report, RstContent
+from oxasl.reporting import ReportPage
+from oxasl.workspace import Workspace
 
 from ._version import __version__, __timestamp__
 
 def get_rois(wsp):
     """
     Generate ROIs for GM and noise
+    
+    Existing ROIs may be provided. If provided in structural space, the ASL data is registered
+    to the structural image and the ROIS will be transformed to ASL space
+
+    If (either) of the noise or GM ROIs are not provided they are automatically generated as follows
+
+     - Grey matter: From segmentation of structural image (via FAST or FSL_ANAT output if provided)
+     - Noise: By inverting brain mask from brain-extracted structural image
+
+    A structural image is therefore required if either ROI needs to be generated, or if either ROI
+    is supplied in structural space. 
+
+    Optional workspace attributes
+    -----------------------------
+
+     - ``ref`` : Reference image for registration of ASL to structural data
+     - ``asldata`` : Single TI ASL data. Middle volume will be used as reference if ``ref`` is required and not set
+     - ``gm_roi`` : Grey matter ROI in ASL or structural space
+     - ``noise_roi`` : Noise ROI in ASL or structural space
+     - ``noise_from_struc`` : If True, existing ``noise_roi`` image is in structural space
+     - ``gm_from_struc`` : If True, existing ``gm_roi`` image is in structural space
+     - ``struc`` : Structural image
+     
+    Workspace attributes set
+    ------------------------
+
+     - ``gm_roi`` : Grey matter ROI in ASL space
+     - ``noise_roi`` : Noise ROI in ASL space
     """
     wsp.log.write("Generating ROIs...\n")
 
@@ -38,13 +84,13 @@ def get_rois(wsp):
         raise RuntimeError("Need to specify a structural image if not providing both noise and GM ROIs, or if either are in structural space")
 
     if wsp.gm_roi is None:
-        segment(wsp)
+        struc.segment(wsp)
         wsp.log.write("Taking GM ROI from segmentation of structural image\n")
         wsp.gm_roi = Image((wsp.gm_pv_struc.data > 0).astype(np.int), header=wsp.struc.header)
         wsp.gm_from_struc = True
 
     if wsp.noise_roi is None:
-        preproc_struc(wsp)
+        struc.preproc_struc(wsp)
         wsp.log.write("Generating noise ROI by inverting T1 brain mask\n")
         wsp.noise_roi = Image(1-wsp.struc_brain_mask.data, header=wsp.struc.header)
         wsp.noise_from_struc = True
@@ -98,9 +144,9 @@ def calculate_cnr(wsp, gm_roi, noise_roi):
     Workspace attributes set
     ------------------------
 
-     - ``cnrs`` : Sequence of CNR values, one for each ASL volume
+     - ``cnrs`` : Sequence of CNR values, one for each repeat
     """
-    wsp.log.write("Calculating CNR for each ASL volume...")
+    wsp.log.write("Calculating CNR for each repeat...")
     
     tdim = wsp.asldata.shape[3]
     wsp.cnrs = []
@@ -122,66 +168,67 @@ def sort_cnr(wsp):
     -----------------------------
 
      - ``asldata`` : Single TI ASL data
-     - ``cnrs`` : Sequence of CNR value for each ASL volume
+     - ``cnrs`` : Sequence of CNR value for each repeat
      
     Workspace attributes set
     ------------------------
 
-     - ``asldata_sorted`` : Single TI ASL data, with volumes sorted by CNR
-     - ``cnrs_sorted`` : Sorted sequence of CNR tuples: (source volume index, CNR)
+     - ``asldata_sorted`` : Single TI ASL data, with repeats sorted by CNR
+     - ``cnrs_sorted`` : Sorted sequence of CNR tuples: (source repeat index, CNR)
     """
-    wsp.log.write("Sorting ASL volumes by CNR\n\n")
+    wsp.log.write("Sorting repeats by CNR\n\n")
     wsp.cnrs_sorted = sorted(enumerate(wsp.cnrs), key=lambda x: x[1], reverse=True)
-    report = RstContent()
 
     # Create re-ordered data array
-    wsp.log.write("Volume\tCNR\n")
+    wsp.log.write("Repeat number\tCNR\n")
     sorted_data = np.zeros(wsp.asldata.shape)
     for idx, cnr in enumerate(wsp.cnrs_sorted):
         sorted_data[:,:,:,idx] = wsp.asldata.data[:,:,:,cnr[0]].astype(np.float32)
         wsp.log.write("%i\t%.3f\n" % (cnr[0], cnr[1]))
         
-    report.table("Source volumes ordered by CNR", wsp.cnrs_sorted)
-    if wsp.report:
-        wsp.report.add_rst("cnrs", report)
+    page = ReportPage()
+    page.heading("Repeats ordered by CNR")
+    page.table(wsp.cnrs_sorted, headers=["Repeat number", "Contrast:Noise ratio"])
+    wsp.report.add("cnrs", page)
 
     wsp.asldata_sorted = wsp.asldata.derived(sorted_data, suffix="_sorted")
     wsp.log.write("\nDONE\n\n")
 
-def calculate_quality_measures(wsp, gm_roi, noise_roi, min_nvols):
+def calculate_quality_measures(wsp, gm_roi, noise_roi):
     """
     Calculate quality measures on the data subset obtained by
     cumulatively including repeats from single-TI ASL data.
     
     :param gm_roi: Grey matter ROI in ASL space
     :param noise_roi: Noise ROI in ASL space
-    :param min_nvols: Minimum number of repeats to include
 
     Required workspace attributes
     -----------------------------
 
      - ``asldata_sorted`` : Single TI ASL data, with repeats sorted by CNR
+     - ``min_nvols`` : Minimum number of repeats to include
      
     Workspace attributes set
     ------------------------
 
-     - ``qms`` : Quality measures obtained by cumulatively including each ASL
-                 volume sequentially. Mapping from measure name to
+     - ``qms`` : Quality measures obtained by cumulatively including each
+                 repeat sequentially. Mapping from measure name to
                  sequence of values.
     """
     wsp.log.write("Calculating quality measures...\n")
-    if min_nvols < 2:
-        raise RuntimeError("Need to keep at least 2 volumes to calculate quality measures")
+    if wsp.min_nvols < 2:
+        raise RuntimeError("Need to keep at least 2 repeats to calculate quality measures")
 
     tdim = wsp.asldata_sorted.shape[3]
     gm_roi = gm_roi.data
     noise_roi = noise_roi.data
     num_gm_voxels = np.count_nonzero(gm_roi)
 
-    wsp.log.write("Volumes\ttCNR\tDETECT\tCOV\ttSNR\n")
+    wsp.log.write("Repeats\ttCNR\tDETECT\tCOV\ttSNR\n")
     qms = {"tcnr" : [], "detect" : [], "cov" : [], "tsnr" : []}
+    report_table = []
 
-    for i in range(min_nvols, tdim+1, 1):
+    for i in range(wsp.min_nvols, tdim+1, 1):
         temp_data = wsp.asldata_sorted.data[:,:,:,:i]
 
         mean = np.mean(temp_data, 3)
@@ -218,8 +265,14 @@ def calculate_quality_measures(wsp, gm_roi, noise_roi, min_nvols):
         qms["cov"].append(CoVGM)
         qms["tsnr"].append(tSNRGM)
         wsp.log.write("%i\t%.3f\t%.3f\t%.3f\t%.3f\n" % (i, SNRGM, DetectGM, CoVGM, tSNRGM))
+        report_table.append([i, SNRGM, DetectGM, CoVGM, tSNRGM])
     wsp.qms = qms
     wsp.log.write("DONE\n\n")  
+        
+    page = ReportPage()
+    page.heading("Cumulative Quality measures by included repeats")
+    page.table(report_table, headers=["Number of repeats", "SNRGM", "DetectGM", "CoVGM", "tSNRGM"])
+    wsp.report.add("qms", page)
 
 def get_combined_quality(wsp, ti, b0="3T"):
     """
@@ -276,6 +329,21 @@ def get_combined_quality(wsp, ti, b0="3T"):
         normed = np.array(vals, dtype=np.float) / max(vals)
         wsp.quality += c * normed
 
+    wsp.best_num_vols = np.argmax(wsp.quality) + wsp.min_nvols
+    wsp.maxqual = max(wsp.quality)
+
+    wsp.log.write("Repeats\tOverall Quality\n")
+    for idx, q in enumerate(wsp.quality):
+        wsp.log.write("%i\t%.3f\n" % (idx, q))
+        wsp.results[idx+wsp.min_nvols-1]["qual"] = q        
+    wsp.log.write("Maximum quality %.3f with %i repeats\n" % (wsp.maxqual, wsp.best_num_vols))
+        
+    page = ReportPage()
+    page.heading("Cumulative overall quality by included repeats")
+    page.text("Maximum overall quality achieved using %i repeats (quality score: %.3f)" % (wsp.best_num_vols, wsp.maxqual))
+    page.table([(idx+wsp.min_nvols, qual) for idx, qual in enumerate(wsp.quality)], headers=["Number of repeats", "Overall Quality"])
+    wsp.report.add("qual", page)
+
 def enable(wsp):
     """
     Remove volumes from a multi-repeat ASL data set to improve overall quality
@@ -287,12 +355,22 @@ def enable(wsp):
                      be provided (not just number)
      - ``gm_roi`` : Grey matter ROI in ASL space
      - ``noise_roi`` : Noise matter ROI in ASL space
-     - ``min_nvols`` : Minimum number of volumes to include from each TI
+     - ``min_nvols`` : Minimum number of repeats to include from each TI
      
     Workspace attributes set
     ------------------------
 
      - ``asldata_enable`` : AslImage with volumes potentially removed
+     - ``enable_results`` : Sequence of results for each TI.
+                            Each TI results object is itself a sequence of dictionaries
+                            one for each repeat at this TI and sorted by contrast:noise ratio
+                            (not in original repeat order). Each contains the keys
+                            ``ti``, ``rpt`` (TI value and original repeat index), ``cnr`` Contrast:Noise ratio,
+                            ``tcnr`` : ?, ``detect`` : ?, ``cov`` : ?, ``tsnr`` : Signal:Noise ratio,
+                            ``qual`` : Overall quality of data set formed by including all repeats
+                            up to and including this one. ``selected`` : True if the best quality data set
+                            for this TI includes this repeat.
+     - ``enable_ti_<val>`` : Sub-workspace containing output from each TI individually
     """
     get_rois(wsp)
 
@@ -301,14 +379,15 @@ def enable(wsp):
     ti_data = []
 
     # Process each TI in turn
-    for idx, ti in enumerate(wsp.asldata_diff.tis):
-        wsp.log.write("\nProcessing TI: %i (%s)\n" % (idx, str(ti)))
+    for ti_idx, ti in enumerate(wsp.asldata_diff.tis):
+        wsp.log.write("\nProcessing TI: %i (%s)\n" % (ti_idx, str(ti)))
         
         # Create workspace for TI
-        wsp_ti = wsp.sub("ti_%s" % str(ti))
-        wsp_ti.asldata = wsp.asldata_diff.single_ti(idx)
+        wsp_ti = wsp.sub("enable_ti_%s" % str(ti))
+        wsp_ti.asldata = wsp.asldata_diff.single_ti(ti_idx)
+        wsp_ti.min_nvols = wsp.min_nvols
+        wsp_ti.report.title = "Quality assessment for TI %i (%.2f)" % (ti_idx+1, ti)
         wsp_ti.results = []
-        wsp_ti.report = wsp.report
 
         # Write out the mean differenced image for comparison
         wsp_ti.asldata_mean = wsp_ti.asldata.mean_across_repeats()
@@ -322,21 +401,13 @@ def enable(wsp):
                  "tcnr" : 0.0, "detect" : 0.0, "cov" : 0.0, "tsnr" : 0.0, "qual" : 0.0}
             )
 
-        calculate_quality_measures(wsp_ti, wsp.gm_roi, wsp.noise_roi, min_nvols=wsp.min_nvols)
+        calculate_quality_measures(wsp_ti, wsp.gm_roi, wsp.noise_roi)
         for meas in "tcnr", "detect", "cov", "tsnr":
             for idx, val in enumerate(wsp_ti.qms[meas]):
-                wsp_ti.results[idx+wsp.min_nvols-1][meas] = val
+                wsp_ti.results[idx+wsp_ti.min_nvols-1][meas] = val
            
         # Get the image at which the combined quality measure has its maximum
         get_combined_quality(wsp_ti, ti)
-        wsp.log.write("Volumes\tOverall Quality\n")
-        for idx, q in enumerate(wsp_ti.quality):
-            wsp.log.write("%i\t%.3f\n" % (idx, q))
-            wsp_ti.results[idx+wsp.min_nvols-1]["qual"] = q
-            
-        wsp_ti.best_num_vols = np.argmax(wsp_ti.quality) + wsp.min_nvols
-        maxqual = wsp_ti.results[wsp_ti.best_num_vols-1]["qual"]
-        wsp.log.write("Maximum quality %.3f with %i volumes\n" % (maxqual, wsp_ti.best_num_vols))
 
         # Generate data subset with maximum quality
         for idx, result in enumerate(wsp_ti.results):
@@ -350,7 +421,8 @@ def enable(wsp):
 
         ti_data.append(wsp_ti.asldata_enable)
         wsp.enable_results += wsp_ti.results
-
+        wsp.report.add("ti_%i" % (ti_idx+1), wsp_ti.report)
+        
     # Create combined data set
     rpts = [img.rpts[0] for img in ti_data]
     combined_data = np.zeros(list(wsp.asldata.shape[:3]) + [sum(rpts),])
@@ -358,10 +430,19 @@ def enable(wsp):
     for nrpts, img in zip(rpts, ti_data):
         combined_data[:,:,:,start:start+nrpts] = img.data
         start += nrpts
-    wsp.log.write("\nCombined data has %i volumes (repeats: %s)\n" % (sum(rpts), str(rpts)))
     wsp.asldata_enable = AslImage(combined_data,
                                   order="rt", tis=wsp.asldata.tis, rpts=rpts,
                                   header=wsp.asldata.header)
+    wsp.log.write("\nCombined data has %i volumes (repeats at each TI: %s)\n" % (sum(rpts), str(rpts)))
+
+    page = ReportPage()
+    page.heading("Summary report")
+    table = [(ti, orig_rpts, img.rpts[0]) for ti, orig_rpts, img in zip(wsp.asldata_diff.tis, wsp.asldata_diff.rpts, ti_data) ]
+    page.table(table, headers=["TI", "Original number of repeats", "Number of included repeats"])
+    page.heading("BASIL options:", level=1)
+    page.text("Using the ENABLE output data, the repeat specification should be::")
+    page.text("    %s" % " ".join(["--rpt%i=%i" % (idx+1, rpt) for idx, rpt in enumerate(rpts)]))
+    wsp.report.add("summary", page)
 
 class EnableOptions(OptionCategory):
     """
@@ -378,7 +459,7 @@ class EnableOptions(OptionCategory):
         group.add_option("--gm", dest="gm_roi", help="Grey matter ROI. If not specified, FAST will be run on the structural image", type="image")
         group.add_option("--gm-from-struc", help="If specified, GM ROI is assumed to be in T1 image space and will be registered to ASL space", action="store_true", default=False)
         group.add_option("--ref", help="Reference image in ASL space for registration and motion correction. If not specified will use middle volume of ASL data",  type="image")
-        group.add_option("--min-nvols", help="Minimum number of volumes to keep for each TI", type="int", default=6)
+        group.add_option("--min-nvols", help="Minimum number of repeats to keep for each TI", type="int", default=6)
 
         return [group]
 
@@ -390,7 +471,7 @@ def main():
         parser = AslOptionParser(usage="oxasl_enable -i <ASL input file> [options...]", version=__version__)
         parser.add_category(AslImageOptions())
         parser.add_category(EnableOptions())
-        parser.add_category(StructuralImageOptions())
+        parser.add_category(struc.StructuralImageOptions())
         parser.add_category(GenericOptions())
         
         options, _ = parser.parse_args(sys.argv)
@@ -404,7 +485,8 @@ def main():
                 
         print("ASL_ENABLE %s (%s)" % (__version__, __timestamp__))
         asldata = AslImage(options.asldata, **parser.filter(options, "image"))
-        wsp = Workspace(savedir=options.output, report=Report("enable-report"), **vars(options))
+        wsp = Workspace(savedir=options.output, **vars(options))
+        wsp.report.title = "ENABLE processing report"
         wsp.asldata = asldata
         
         asldata.summary()
@@ -421,7 +503,7 @@ def main():
         print("\nTo run BASIL use input data %s" % wsp.asldata_enable.name)
         print("and %s" % " ".join(["--rpt%i=%i" % (idx+1, rpt) for idx, rpt in enumerate(wsp.asldata_enable.rpts)]))
     
-        wsp.report.generate_html(os.path.join(wsp.output, "enable_report"))
+        wsp.report.generate_html(os.path.join(wsp.output, "report"), "report_build")
 
     except RuntimeError as e:
         print("ERROR: " + str(e) + "\n")
