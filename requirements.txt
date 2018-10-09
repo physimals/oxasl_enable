@@ -1,4 +1,3 @@
 numpy
 nibabel
-fslpy
 oxasl
