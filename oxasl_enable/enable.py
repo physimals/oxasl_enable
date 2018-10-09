@@ -15,29 +15,24 @@ framework, and is hence based around the AslImage and Workspace classes.
 A command line tool is provided (``oxasl_enable``), also the API may be
 used directly. The main method is ``enable`` - see this method's 
 documentation for the workspace attributes that should be set.
+
+Copyright (c) 2018 University of Oxford
 """
+from __future__ import print_function
 
 import os
 import sys
-import glob
-import shutil
 import math
-from optparse import OptionParser, OptionGroup
 
-import nibabel as nib
 import numpy as np
 import scipy.stats
 
 from fsl.data.image import Image
 import fsl.wrappers as fsl
 
-from oxasl import AslImage
-import oxasl.struc as struc
+from oxasl import Workspace, AslImage, reg, struc, image
 from oxasl.options import AslOptionParser, OptionCategory, IgnorableOptionGroup, GenericOptions
-from oxasl.reg import reg_asl2struc
-from oxasl.image import AslImageOptions
 from oxasl.reporting import ReportPage
-from oxasl.workspace import Workspace
 
 from ._version import __version__, __timestamp__
 
@@ -59,8 +54,8 @@ def get_rois(wsp):
     Optional workspace attributes
     -----------------------------
 
-     - ``ref`` : Reference image for registration of ASL to structural data
-     - ``asldata`` : Single TI ASL data. Middle volume will be used as reference if ``ref`` is required and not set
+     - ``regfrom`` : Reference image for registration of ASL to structural data
+     - ``asldata`` : Single TI ASL data. Middle volume will be used as reference if ``regfrom`` is required and not set
      - ``gm_roi`` : Grey matter ROI in ASL or structural space
      - ``noise_roi`` : Noise ROI in ASL or structural space
      - ``noise_from_struc`` : If True, existing ``noise_roi`` image is in structural space
@@ -75,13 +70,13 @@ def get_rois(wsp):
     """
     wsp.log.write("Generating ROIs...\n")
 
-    if wsp.ref is None:
-        wsp.log.write(" - Reference image not provided - using ASL data middle volume\n")
+    if wsp.regfrom is None:
+        wsp.log.write(" - Reference image for registration not provided - using ASL data middle volume\n")
         middle = int(wsp.asldata.shape[3]/2)
-        wsp.ref = Image(wsp.asldata.data[:,:,:,middle], header=wsp.asldata.header)
+        wsp.regfrom = Image(wsp.asldata.data[:, :, :, middle], header=wsp.asldata.header)
         
     if (wsp.gm_roi is None or wsp.noise_roi is None or wsp.noise_from_struc or wsp.gm_from_struc) and wsp.struc is None:
-        raise RuntimeError("Need to specify a structural image if not providing both noise and GM ROIs, or if either are in structural space")
+        raise RuntimeError("Need to specify a structural image unless you provide both noise and GM ROIs in ASL space")
 
     if wsp.gm_roi is None:
         struc.segment(wsp)
@@ -97,20 +92,19 @@ def get_rois(wsp):
 
     if wsp.noise_from_struc or wsp.gm_from_struc:
         # Need struc->ASL registration space so we can apply to noise and/or GM ROIs
-        wsp.regfrom = wsp.ref
         wsp.do_flirt = True
         wsp.do_bbr = False
-        reg_asl2struc(wsp)
+        reg.reg_asl2struc(wsp)
 
     if wsp.noise_from_struc:
         wsp.log.write(" - Registering noise ROI to ASL space since it was defined in structural space\n\n")
         wsp.noise_roi_struc = wsp.noise_roi
-        wsp.noise_roi = fsl.applyxfm(wsp.noise_roi_struc, wsp.regfrom, wsp.struc2asl, out=fsl.LOAD, interp="nearestneighbour", log=wsp.fsllog)["out"]
+        wsp.noise_roi = reg.struc2asl(wsp.noise_roi_struc, interp="nearestneighbour")
 
     if wsp.gm_from_struc:
         wsp.log.write(" - Registering GM ROI to ASL space since it was defined in structural space\n\n")
         wsp.gm_roi_struc = wsp.gm_roi
-        wsp.gm_roi = fsl.applyxfm(wsp.gm_roi_struc, wsp.regfrom, wsp.struc2asl, out=fsl.LOAD, interp="nearestneighbour", log=wsp.fsllog)["out"]
+        wsp.gm_roi = reg.struc2asl(wsp.gm_roi_struc, interp="nearestneighbour")
 
     wsp.log.write("DONE\n\n")
 
@@ -151,7 +145,7 @@ def calculate_cnr(wsp, gm_roi, noise_roi):
     tdim = wsp.asldata.shape[3]
     wsp.cnrs = []
     for i in range(tdim):
-        vol_data = wsp.asldata.data[:,:,:,i].astype(np.float32)
+        vol_data = wsp.asldata.data[:, :, :, i].astype(np.float32)
         meanGM = np.mean(vol_data[gm_roi.data > 0])
         noisestd = np.std(vol_data[noise_roi.data > 0])
         cnr = meanGM/noisestd
@@ -183,7 +177,7 @@ def sort_cnr(wsp):
     wsp.log.write("Repeat number\tCNR\n")
     sorted_data = np.zeros(wsp.asldata.shape)
     for idx, cnr in enumerate(wsp.cnrs_sorted):
-        sorted_data[:,:,:,idx] = wsp.asldata.data[:,:,:,cnr[0]].astype(np.float32)
+        sorted_data[:, :, :, idx] = wsp.asldata.data[:, :, :, cnr[0]].astype(np.float32)
         wsp.log.write("%i\t%.3f\n" % (cnr[0], cnr[1]))
         
     page = ReportPage()
@@ -229,7 +223,7 @@ def calculate_quality_measures(wsp, gm_roi, noise_roi):
     report_table = []
 
     for i in range(wsp.min_nvols, tdim+1, 1):
-        temp_data = wsp.asldata_sorted.data[:,:,:,:i]
+        temp_data = wsp.asldata_sorted.data[:, :, :, :i]
 
         mean = np.mean(temp_data, 3)
         std = np.std(temp_data, 3, ddof=1)
@@ -246,7 +240,7 @@ def calculate_quality_measures(wsp, gm_roi, noise_roi):
         # is fast but not accurate enough. Need to understand exactly what 
         # this is doing, however, because it seems to rely on 'anything below
         # float32 minimum == 0'
-        calc_p = np.vectorize(lambda x: tsf(i, x))
+        calc_p = np.vectorize(lambda x, vol=i: tsf(vol, x))
         p1 = calc_p(tstats).astype(np.float32)
         p1[p1 > 0.05] = 0
         sigvox2 = p1
@@ -297,7 +291,7 @@ def get_combined_quality(wsp, ti, b0="3T"):
     """
     # Weightings from the ENABLE paper, these vary by PLD
     sampling_plds = [0.1, 0.5, 0.9, 1.3, 1.7, 2.1]
-    coef={
+    coef = {
         "3T" : {
             "tcnr" : [0.4, 0.3, 0.7, 0.1, 0.5, 0.3],
             "detect" : [1.6, 1.7, 1.0, 1.8, 1.4, 1.8],
@@ -413,7 +407,7 @@ def enable(wsp):
         for idx, result in enumerate(wsp_ti.results):
             result["selected"] = idx < wsp_ti.best_num_vols
             
-        wsp_ti.asldata_enable = AslImage(wsp_ti.asldata_sorted.data[:,:,:,:wsp_ti.best_num_vols], 
+        wsp_ti.asldata_enable = AslImage(wsp_ti.asldata_sorted.data[:, :, :, :wsp_ti.best_num_vols], 
                                          order=wsp_ti.asldata.order, ntis=1, nrpts=wsp_ti.best_num_vols,
                                          header=wsp_ti.asldata.header)
 
@@ -428,7 +422,7 @@ def enable(wsp):
     combined_data = np.zeros(list(wsp.asldata.shape[:3]) + [sum(rpts),])
     start = 0
     for nrpts, img in zip(rpts, ti_data):
-        combined_data[:,:,:,start:start+nrpts] = img.data
+        combined_data[:, :, :, start:start+nrpts] = img.data
         start += nrpts
     wsp.asldata_enable = AslImage(combined_data,
                                   order="rt", tis=wsp.asldata.tis, rpts=rpts,
@@ -437,7 +431,7 @@ def enable(wsp):
 
     page = ReportPage()
     page.heading("Summary report")
-    table = [(ti, orig_rpts, img.rpts[0]) for ti, orig_rpts, img in zip(wsp.asldata_diff.tis, wsp.asldata_diff.rpts, ti_data) ]
+    table = [(ti, orig_rpts, img.rpts[0]) for ti, orig_rpts, img in zip(wsp.asldata_diff.tis, wsp.asldata_diff.rpts, ti_data)]
     page.table(table, headers=["TI", "Original number of repeats", "Number of included repeats"])
     page.heading("BASIL options:", level=1)
     page.text("Using the ENABLE output data, the repeat specification should be::")
@@ -458,7 +452,7 @@ class EnableOptions(OptionCategory):
         group.add_option("--noise-from-struc", help="If specified, noise ROI is assumed to be in structural image space and will be registered to ASL space", action="store_true", default=False)
         group.add_option("--gm", dest="gm_roi", help="Grey matter ROI. If not specified, FAST will be run on the structural image", type="image")
         group.add_option("--gm-from-struc", help="If specified, GM ROI is assumed to be in T1 image space and will be registered to ASL space", action="store_true", default=False)
-        group.add_option("--ref", help="Reference image in ASL space for registration and motion correction. If not specified will use middle volume of ASL data",  type="image")
+        group.add_option("--regfrom", help="Reference image in ASL space for registration and motion correction. If not specified will use middle volume of ASL data", type="image")
         group.add_option("--min-nvols", help="Minimum number of repeats to keep for each TI", type="int", default=6)
 
         return [group]
@@ -469,7 +463,7 @@ def main():
     """
     try:
         parser = AslOptionParser(usage="oxasl_enable -i <ASL input file> [options...]", version=__version__)
-        parser.add_category(AslImageOptions())
+        parser.add_category(image.AslImageOptions())
         parser.add_category(EnableOptions())
         parser.add_category(struc.StructuralImageOptions())
         parser.add_category(GenericOptions())

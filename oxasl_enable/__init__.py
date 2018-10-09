@@ -1,4 +1,9 @@
-from .enable import enable
-from ._version import __version__
+"""
+Enhancement of Automated Blood Flow Estimates (ENABLE) for ASL-MRI
 
-__all__ = ['__version__', 'enable']
+Copyright (c) 2018 University of Oxford
+"""
+from .enable import enable
+from ._version import __version__, __timestamp__
+
+__all__ = ['__version__', '__timestamp__', 'enable']
