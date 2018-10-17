@@ -28,11 +28,9 @@ import numpy as np
 import scipy.stats
 
 from fsl.data.image import Image
-import fsl.wrappers as fsl
 
 from oxasl import Workspace, AslImage, reg, struc, image
 from oxasl.options import AslOptionParser, OptionCategory, IgnorableOptionGroup, GenericOptions
-from oxasl.reporting import ReportPage
 
 from ._version import __version__, __timestamp__
 
@@ -75,19 +73,19 @@ def get_rois(wsp):
         middle = int(wsp.asldata.shape[3]/2)
         wsp.regfrom = Image(wsp.asldata.data[:, :, :, middle], header=wsp.asldata.header)
         
-    if (wsp.gm_roi is None or wsp.noise_roi is None or wsp.noise_from_struc or wsp.gm_from_struc) and wsp.struc is None:
+    struc.init(wsp)
+    if (wsp.gm_roi is None or wsp.noise_roi is None or wsp.noise_from_struc or wsp.gm_from_struc) and wsp.structural.struc is None:
         raise RuntimeError("Need to specify a structural image unless you provide both noise and GM ROIs in ASL space")
 
     if wsp.gm_roi is None:
         struc.segment(wsp)
         wsp.log.write("Taking GM ROI from segmentation of structural image\n")
-        wsp.gm_roi = Image((wsp.gm_pv_struc.data > 0).astype(np.int), header=wsp.struc.header)
+        wsp.gm_roi = Image((wsp.structural.gm_pv.data > 0).astype(np.int), header=wsp.structural.struc.header)
         wsp.gm_from_struc = True
 
     if wsp.noise_roi is None:
-        struc.preproc_struc(wsp)
         wsp.log.write("Generating noise ROI by inverting T1 brain mask\n")
-        wsp.noise_roi = Image(1-wsp.struc_brain_mask.data, header=wsp.struc.header)
+        wsp.noise_roi = Image(1-wsp.structural.brain_mask.data, header=wsp.structural.struc.header)
         wsp.noise_from_struc = True
 
     if wsp.noise_from_struc or wsp.gm_from_struc:
@@ -99,12 +97,12 @@ def get_rois(wsp):
     if wsp.noise_from_struc:
         wsp.log.write(" - Registering noise ROI to ASL space since it was defined in structural space\n\n")
         wsp.noise_roi_struc = wsp.noise_roi
-        wsp.noise_roi = reg.struc2asl(wsp.noise_roi_struc, interp="nearestneighbour")
+        wsp.noise_roi = reg.struc2asl(wsp, wsp.noise_roi_struc, interp="nearestneighbour")
 
     if wsp.gm_from_struc:
         wsp.log.write(" - Registering GM ROI to ASL space since it was defined in structural space\n\n")
         wsp.gm_roi_struc = wsp.gm_roi
-        wsp.gm_roi = reg.struc2asl(wsp.gm_roi_struc, interp="nearestneighbour")
+        wsp.gm_roi = reg.struc2asl(wsp, wsp.gm_roi_struc, interp="nearestneighbour")
 
     wsp.log.write("DONE\n\n")
 
@@ -180,11 +178,10 @@ def sort_cnr(wsp):
         sorted_data[:, :, :, idx] = wsp.asldata.data[:, :, :, cnr[0]].astype(np.float32)
         wsp.log.write("%i\t%.3f\n" % (cnr[0], cnr[1]))
         
-    page = ReportPage()
+    page = wsp.report.page("cnrs")
     page.heading("Repeats ordered by CNR")
     page.table(wsp.cnrs_sorted, headers=["Repeat number", "Contrast:Noise ratio"])
-    wsp.report.add("cnrs", page)
-
+    
     wsp.asldata_sorted = wsp.asldata.derived(sorted_data, suffix="_sorted")
     wsp.log.write("\nDONE\n\n")
 
@@ -263,10 +260,9 @@ def calculate_quality_measures(wsp, gm_roi, noise_roi):
     wsp.qms = qms
     wsp.log.write("DONE\n\n")  
         
-    page = ReportPage()
+    page = wsp.report.page("qms")
     page.heading("Cumulative Quality measures by included repeats")
     page.table(report_table, headers=["Number of repeats", "SNRGM", "DetectGM", "CoVGM", "tSNRGM"])
-    wsp.report.add("qms", page)
 
 def get_combined_quality(wsp, ti, b0="3T"):
     """
@@ -332,12 +328,11 @@ def get_combined_quality(wsp, ti, b0="3T"):
         wsp.results[idx+wsp.min_nvols-1]["qual"] = q        
     wsp.log.write("Maximum quality %.3f with %i repeats\n" % (wsp.maxqual, wsp.best_num_vols))
         
-    page = ReportPage()
+    page = wsp.report.page("qual")
     page.heading("Cumulative overall quality by included repeats")
     page.text("Maximum overall quality achieved using %i repeats (quality score: %.3f)" % (wsp.best_num_vols, wsp.maxqual))
     page.table([(idx+wsp.min_nvols, qual) for idx, qual in enumerate(wsp.quality)], headers=["Number of repeats", "Overall Quality"])
-    wsp.report.add("qual", page)
-
+   
 def enable(wsp):
     """
     Remove volumes from a multi-repeat ASL data set to improve overall quality
@@ -429,15 +424,14 @@ def enable(wsp):
                                   header=wsp.asldata.header)
     wsp.log.write("\nCombined data has %i volumes (repeats at each TI: %s)\n" % (sum(rpts), str(rpts)))
 
-    page = ReportPage()
+    page = wsp.report.page("summary")
     page.heading("Summary report")
     table = [(ti, orig_rpts, img.rpts[0]) for ti, orig_rpts, img in zip(wsp.asldata_diff.tis, wsp.asldata_diff.rpts, ti_data)]
     page.table(table, headers=["TI", "Original number of repeats", "Number of included repeats"])
     page.heading("BASIL options:", level=1)
     page.text("Using the ENABLE output data, the repeat specification should be::")
     page.text("    %s" % " ".join(["--rpt%i=%i" % (idx+1, rpt) for idx, rpt in enumerate(rpts)]))
-    wsp.report.add("summary", page)
-
+    
 class EnableOptions(OptionCategory):
     """
     ENABLE option category
@@ -468,22 +462,17 @@ def main():
         parser.add_category(struc.StructuralImageOptions())
         parser.add_category(GenericOptions())
         
-        options, _ = parser.parse_args(sys.argv)
+        options, _ = parser.parse_args()
         if not options.output:
             options.output = "enable_output"
+        if options.debug:
+            options.save_all = True
 
-        if not options.asldata:
-            sys.stderr.write("Input ASL data not specified\n")
-            parser.print_help()
-            sys.exit(1)
-                
-        print("ASL_ENABLE %s (%s)" % (__version__, __timestamp__))
-        asldata = AslImage(options.asldata, **parser.filter(options, "image"))
-        wsp = Workspace(savedir=options.output, **vars(options))
+        wsp = Workspace(savedir=options.output, auto_asldata=True, **vars(options))
         wsp.report.title = "ENABLE processing report"
-        wsp.asldata = asldata
+        print("ASL_ENABLE %s (%s)" % (__version__, __timestamp__))
         
-        asldata.summary()
+        wsp.asldata.summary()
         print("")
 
         # Preprocessing (TC subtraction, optional MoCo/smoothing)
