@@ -31,6 +31,7 @@ from fsl.data.image import Image
 
 from oxasl import Workspace, AslImage, reg, struc, image
 from oxasl.options import AslOptionParser, OptionCategory, IgnorableOptionGroup, GenericOptions
+from oxasl.reporting import Report
 
 from ._version import __version__, __timestamp__
 
@@ -372,7 +373,7 @@ def enable(wsp):
         wsp.log.write("\nProcessing TI: %i (%s)\n" % (ti_idx, str(ti)))
         
         # Create workspace for TI
-        wsp_ti = wsp.sub("enable_ti_%s" % str(ti))
+        wsp_ti = wsp.sub("enable_ti_%s" % (ti_idx+1), report=Report())
         wsp_ti.asldata = wsp.asldata_diff.single_ti(ti_idx)
         wsp_ti.min_nvols = wsp.min_nvols
         wsp_ti.report.title = "Quality assessment for TI %i (%.2f)" % (ti_idx+1, ti)
@@ -386,7 +387,7 @@ def enable(wsp):
         sort_cnr(wsp_ti)
         for orig_vol, cnr in wsp_ti.cnrs_sorted:
             wsp_ti.results.append(
-                {"ti" : ti, "rpt" : orig_vol, "cnr" : cnr,
+                {"ti" : ti, "ti_idx" : ti_idx, "rpt" : orig_vol, "cnr" : cnr,
                  "tcnr" : 0.0, "detect" : 0.0, "cov" : 0.0, "tsnr" : 0.0, "qual" : 0.0}
             )
 
@@ -411,7 +412,7 @@ def enable(wsp):
         ti_data.append(wsp_ti.asldata_enable)
         wsp.enable_results += wsp_ti.results
         wsp.report.add("ti_%i" % (ti_idx+1), wsp_ti.report)
-        
+
     # Create combined data set
     rpts = [img.rpts[0] for img in ti_data]
     combined_data = np.zeros(list(wsp.asldata.shape[:3]) + [sum(rpts),])
