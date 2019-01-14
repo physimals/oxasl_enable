@@ -98,12 +98,12 @@ def get_rois(wsp):
     if wsp.noise_from_struc:
         wsp.log.write(" - Registering noise ROI to ASL space since it was defined in structural space\n\n")
         wsp.noise_roi_struc = wsp.noise_roi
-        wsp.noise_roi = reg.struc2asl(wsp, wsp.noise_roi_struc, interp="nearestneighbour")
+        wsp.noise_roi = reg.struc2asl(wsp, wsp.noise_roi_struc, interp="nn")
 
     if wsp.gm_from_struc:
         wsp.log.write(" - Registering GM ROI to ASL space since it was defined in structural space\n\n")
         wsp.gm_roi_struc = wsp.gm_roi
-        wsp.gm_roi = reg.struc2asl(wsp, wsp.gm_roi_struc, interp="nearestneighbour")
+        wsp.gm_roi = reg.struc2asl(wsp, wsp.gm_roi_struc, interp="nn")
 
     wsp.log.write("DONE\n\n")
 
