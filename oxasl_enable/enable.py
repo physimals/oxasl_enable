@@ -29,7 +29,7 @@ import scipy.stats
 
 from fsl.data.image import Image
 
-from oxasl import Workspace, AslImage, reg, struc, image
+from oxasl import Workspace, reg, struc, image
 from oxasl.options import AslOptionParser, OptionCategory, IgnorableOptionGroup, GenericOptions
 from oxasl.reporting import Report
 
@@ -403,9 +403,10 @@ def enable(wsp):
         for idx, result in enumerate(wsp_ti.results):
             result["selected"] = idx < wsp_ti.best_num_vols
             
-        wsp_ti.asldata_enable = AslImage(wsp_ti.asldata_sorted.data[:, :, :, :wsp_ti.best_num_vols], 
-                                         order=wsp_ti.asldata.order, ntis=1, nrpts=wsp_ti.best_num_vols,
-                                         header=wsp_ti.asldata.header)
+        wsp_ti.asldata.summary()
+        wsp_ti.asldata_enable = wsp_ti.asldata.derived(wsp_ti.asldata_sorted.data[:, :, :, :wsp_ti.best_num_vols], 
+                                                       rpts=wsp_ti.best_num_vols)
+        wsp_ti.asldata_enable.summary()
 
         wsp_ti.asldata_enable_mean = wsp_ti.asldata_enable.mean_across_repeats()
 
@@ -420,9 +421,7 @@ def enable(wsp):
     for nrpts, img in zip(rpts, ti_data):
         combined_data[:, :, :, start:start+nrpts] = img.data
         start += nrpts
-    wsp.asldata_enable = AslImage(combined_data,
-                                  order="rt", tis=wsp.asldata.tis, rpts=rpts,
-                                  header=wsp.asldata.header)
+    wsp.asldata_enable = wsp.asldata_diff.derived(combined_data, order="rt", tis=wsp.asldata.tis, rpts=rpts)
     wsp.log.write("\nCombined data has %i volumes (repeats at each TI: %s)\n" % (sum(rpts), str(rpts)))
 
     page = wsp.report.page("summary")
