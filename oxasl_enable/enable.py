@@ -403,10 +403,10 @@ def enable(wsp):
         for idx, result in enumerate(wsp_ti.results):
             result["selected"] = idx < wsp_ti.best_num_vols
             
-        wsp_ti.asldata.summary()
+        wsp_ti.asldata.summary(wsp.log)
         wsp_ti.asldata_enable = wsp_ti.asldata.derived(wsp_ti.asldata_sorted.data[:, :, :, :wsp_ti.best_num_vols], 
                                                        rpts=wsp_ti.best_num_vols)
-        wsp_ti.asldata_enable.summary()
+        wsp_ti.asldata_enable.summary(wsp.log)
 
         wsp_ti.asldata_enable_mean = wsp_ti.asldata_enable.mean_across_repeats()
 
