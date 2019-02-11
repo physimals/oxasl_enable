@@ -24,7 +24,12 @@ PLD image, namely:
 
 ## Usage
 
-    enable -i <ASL input file> -t1 <T1 image> -n <Noise ROI image> -o <Output dir>
+    oxasl_enable -i <ASL input file> -t1 <T1 image> -n <Noise ROI image> -o <Output dir>
+
+oxasl_enable can also be used as a plug-in for the OXASL ASL processing pipeline - see documentation
+for this tool at:
+
+https://oxasl.readthedocs.io/
 
 ### Options
 
