@@ -25,6 +25,7 @@ import sys
 import math
 
 import numpy as np
+import pandas as pd
 import scipy.stats
 
 from fsl.data.image import Image
@@ -423,7 +424,10 @@ def enable(wsp):
         start += nrpts
     wsp.asldata_enable = wsp.asldata_diff.derived(combined_data, order="rt", tis=wsp.asldata.tis, rpts=rpts)
     wsp.log.write("\nCombined data has %i volumes (repeats at each TI: %s)\n" % (sum(rpts), str(rpts)))
-
+    
+    # Pandas can cleverly convert list of dicts to data frame!
+    wsp.enable_results = pd.DataFrame(wsp.enable_results)
+            
     page = wsp.report.page("summary")
     page.heading("Summary report")
     table = [(ti, orig_rpts, img.rpts[0]) for ti, orig_rpts, img in zip(wsp.asldata_diff.tis, wsp.asldata_diff.rpts, ti_data)]
@@ -480,8 +484,7 @@ def main():
         #preproc = preprocess(asldata, options, ref=ref)
 
         enable(wsp)
-        for result in wsp.enable_results:
-            print("Ti=%.3f, Repeat %i, CNR=%.3f, Q=%.3f, selected=%s" % (result["ti"], result["rpt"], result["cnr"], result["qual"], result["selected"]))
+        print(wsp.enable_results)
         
         print("\nTo run BASIL use input data %s" % wsp.asldata_enable.name)
         print("and %s" % " ".join(["--rpt%i=%i" % (idx+1, rpt) for idx, rpt in enumerate(wsp.asldata_enable.rpts)]))
