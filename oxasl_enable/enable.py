@@ -321,7 +321,7 @@ def get_combined_quality(wsp, ti, b0="3T"):
         normed = np.array(vals, dtype=np.float) / max(vals)
         wsp.quality += c * normed
 
-    wsp.best_num_vols = np.argmax(wsp.quality) + wsp.min_nvols
+    wsp.best_num_vols = int(np.argmax(wsp.quality) + wsp.min_nvols)
     wsp.maxqual = max(wsp.quality)
 
     wsp.log.write("Repeats\tOverall Quality\n")
