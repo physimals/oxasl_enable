@@ -2,3 +2,4 @@ build
 oxasl_enable/_version.py
 dist
 oxasl_enable.egg-info
+__pycache__
