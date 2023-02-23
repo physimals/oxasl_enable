@@ -31,7 +31,7 @@ import scipy.stats
 from fsl.data.image import Image
 
 from oxasl import Workspace, reg, struc, image
-from oxasl.options import AslOptionParser, OptionCategory, IgnorableOptionGroup, GenericOptions
+from oxasl.options import AslOptionParser, OptionCategory, OptionGroup, GenericOptions
 from oxasl.reporting import Report
 
 from ._version import __version__, __timestamp__
@@ -54,11 +54,10 @@ def get_rois(wsp):
     Optional workspace attributes
     -----------------------------
 
-     - ``regfrom`` : Reference image for registration of ASL to structural data
-     - ``asldata`` : Single TI ASL data. Middle volume will be used as reference if ``regfrom`` is required and not set
+     - ``asldata`` : Single TI ASL data
      - ``gm_roi`` : Grey matter ROI in ASL or structural space
-     - ``noise_roi`` : Noise ROI in ASL or structural space
-     - ``noise_from_struc`` : If True, existing ``noise_roi`` image is in structural space
+     - ``enable_noise_roi`` : Noise ROI in ASL or structural space
+     - ``noise_from_struc`` : If True, existing ``enable_noise_roi`` image is in structural space
      - ``gm_from_struc`` : If True, existing ``gm_roi`` image is in structural space
      - ``struc`` : Structural image
      
@@ -66,47 +65,32 @@ def get_rois(wsp):
     ------------------------
 
      - ``gm_roi`` : Grey matter ROI in ASL space
-     - ``noise_roi`` : Noise ROI in ASL space
+     - ``enable_noise_roi`` : Noise ROI in ASL space
     """
-    wsp.log.write("Generating ROIs...\n")
+    wsp.log.write(" - Generating ROIs...\n")
 
-    if wsp.regfrom is None:
-        wsp.log.write(" - Reference image for registration not provided - using ASL data middle volume\n")
-        middle = int(wsp.asldata.shape[3]/2)
-        wsp.regfrom = Image(wsp.asldata.data[:, :, :, middle], header=wsp.asldata.header)
-        
-    struc.init(wsp)
-    if (wsp.gm_roi is None or wsp.noise_roi is None or wsp.noise_from_struc or wsp.gm_from_struc) and wsp.structural.struc is None:
+    if (wsp.enable_gm_roi is None or wsp.enable_noise_roi is None or wsp.enable_noise_from_struc or wsp.enable_gm_from_struc) and wsp.structural.struc is None:
         raise RuntimeError("Need to specify a structural image unless you provide both noise and GM ROIs in ASL space")
 
-    if wsp.gm_roi is None:
-        struc.segment(wsp)
-        wsp.log.write("Taking GM ROI from segmentation of structural image\n")
-        wsp.gm_roi = Image((wsp.structural.gm_pv.data > 0).astype(np.int), header=wsp.structural.struc.header)
-        wsp.gm_from_struc = True
+    if wsp.enable_gm_roi is None:
+        wsp.log.write(" - Taking GM ROI from segmentation of structural image\n")
+        wsp.enable_gm_roi = Image((wsp.structural.gm_pv.data > 0).astype(np.int), header=wsp.structural.struc.header)
+        wsp.enable_gm_from_struc = True
 
-    if wsp.noise_roi is None:
-        wsp.log.write("Generating noise ROI by inverting T1 brain mask\n")
-        wsp.noise_roi = Image(1-wsp.structural.brain_mask.data, header=wsp.structural.struc.header)
-        wsp.noise_from_struc = True
+    if wsp.enable_noise_roi is None:
+        wsp.log.write(" - Generating noise ROI by inverting T1 brain mask\n")
+        wsp.enable_noise_roi = Image(1-wsp.structural.brain_mask.data, header=wsp.structural.struc.header)
+        wsp.enable_noise_from_struc = True
 
-    if wsp.noise_from_struc or wsp.gm_from_struc:
-        # Need struc->ASL registration space so we can apply to noise and/or GM ROIs
-        wsp.do_flirt = True
-        wsp.do_bbr = False
-        reg.reg_asl2struc(wsp)
+    if wsp.enable_noise_from_struc:
+        wsp.log.write(" - Registering noise ROI to ASL space since it was defined in structural space\n")
+        wsp.enable_noise_roi_struc = wsp.enable_noise_roi
+        wsp.enable_noise_roi = reg.change_space(wsp, wsp.enable_noise_roi_struc, "asl", mask=True)
 
-    if wsp.noise_from_struc:
-        wsp.log.write(" - Registering noise ROI to ASL space since it was defined in structural space\n\n")
-        wsp.noise_roi_struc = wsp.noise_roi
-        wsp.noise_roi = reg.struc2asl(wsp, wsp.noise_roi_struc, interp="nn")
-
-    if wsp.gm_from_struc:
-        wsp.log.write(" - Registering GM ROI to ASL space since it was defined in structural space\n\n")
-        wsp.gm_roi_struc = wsp.gm_roi
-        wsp.gm_roi = reg.struc2asl(wsp, wsp.gm_roi_struc, interp="nn")
-
-    wsp.log.write("DONE\n\n")
+    if wsp.enable_gm_from_struc:
+        wsp.log.write(" - Registering GM ROI to ASL space since it was defined in structural space\n")
+        wsp.enable_gm_roi_struc = wsp.enable_gm_roi
+        wsp.enable_gm_roi = reg.change_space(wsp, wsp.enable_gm_roi_struc, "asl", mask=True)
 
 def tsf(df, t):
     """ 
@@ -140,7 +124,7 @@ def calculate_cnr(wsp, gm_roi, noise_roi):
 
      - ``cnrs`` : Sequence of CNR values, one for each repeat
     """
-    wsp.log.write("Calculating CNR for each repeat...")
+    wsp.log.write(" - Calculating CNR for each repeat...")
     
     tdim = wsp.asldata.shape[3]
     wsp.cnrs = []
@@ -152,7 +136,6 @@ def calculate_cnr(wsp, gm_roi, noise_roi):
         if cnr < 0:
             wsp.log.write("WARNING: CNR was negative - are your tag-control pairs the right way round?")
         wsp.cnrs.append(cnr)
-    wsp.log.write("DONE\n\n")
 
 def sort_cnr(wsp):
     """
@@ -170,11 +153,11 @@ def sort_cnr(wsp):
      - ``asldata_sorted`` : Single TI ASL data, with repeats sorted by CNR
      - ``cnrs_sorted`` : Sorted sequence of CNR tuples: (source repeat index, CNR)
     """
-    wsp.log.write("Sorting repeats by CNR\n\n")
+    wsp.log.write("\n - Sorting repeats by CNR\n")
     wsp.cnrs_sorted = sorted(enumerate(wsp.cnrs), key=lambda x: x[1], reverse=True)
 
     # Create re-ordered data array
-    wsp.log.write("Repeat number\tCNR\n")
+    wsp.log.write("Repeat\tCNR\n")
     sorted_data = np.zeros(wsp.asldata.shape)
     for idx, cnr in enumerate(wsp.cnrs_sorted):
         sorted_data[:, :, :, idx] = wsp.asldata.data[:, :, :, cnr[0]].astype(np.float32)
@@ -185,7 +168,6 @@ def sort_cnr(wsp):
     page.table(wsp.cnrs_sorted, headers=["Repeat number", "Contrast:Noise ratio"])
     
     wsp.asldata_sorted = wsp.asldata.derived(sorted_data, suffix="_sorted")
-    wsp.log.write("\nDONE\n\n")
 
 def calculate_quality_measures(wsp, gm_roi, noise_roi):
     """
@@ -199,7 +181,7 @@ def calculate_quality_measures(wsp, gm_roi, noise_roi):
     -----------------------------
 
      - ``asldata_sorted`` : Single TI ASL data, with repeats sorted by CNR
-     - ``min_nvols`` : Minimum number of repeats to include
+     - ``enable_min_nvols`` : Minimum number of repeats to include
      
     Workspace attributes set
     ------------------------
@@ -208,8 +190,9 @@ def calculate_quality_measures(wsp, gm_roi, noise_roi):
                  repeat sequentially. Mapping from measure name to
                  sequence of values.
     """
-    wsp.log.write("Calculating quality measures...\n")
-    if wsp.min_nvols < 2:
+    wsp.log.write("\n - Calculating quality measures...\n")
+    wsp.enable_min_nvols = wsp.ifnone("enable_min_nvols", 2)
+    if wsp.enable_min_nvols < 2:
         raise RuntimeError("Need to keep at least 2 repeats to calculate quality measures")
 
     tdim = wsp.asldata_sorted.shape[3]
@@ -221,7 +204,7 @@ def calculate_quality_measures(wsp, gm_roi, noise_roi):
     qms = {"tcnr" : [], "detect" : [], "cov" : [], "tsnr" : []}
     report_table = []
 
-    for i in range(wsp.min_nvols, tdim+1, 1):
+    for i in range(wsp.enable_min_nvols, tdim+1, 1):
         temp_data = wsp.asldata_sorted.data[:, :, :, :i]
 
         mean = np.mean(temp_data, 3)
@@ -260,7 +243,6 @@ def calculate_quality_measures(wsp, gm_roi, noise_roi):
         wsp.log.write("%i\t%.3f\t%.3f\t%.3f\t%.3f\n" % (i, SNRGM, DetectGM, CoVGM, tSNRGM))
         report_table.append([i, SNRGM, DetectGM, CoVGM, tSNRGM])
     wsp.qms = qms
-    wsp.log.write("DONE\n\n")  
         
     page = wsp.report.page("qms")
     page.heading("Cumulative Quality measures by included repeats")
@@ -287,6 +269,7 @@ def get_combined_quality(wsp, ti, b0="3T"):
      - ``quality`` : Sequence giving the total quality achieved by cumulatively including 
                      each repeat
     """
+    wsp.log.write("\n - Calculating overall quality...\n")
     # Weightings from the ENABLE paper, these vary by PLD
     sampling_plds = [0.1, 0.5, 0.9, 1.3, 1.7, 2.1]
     coef = {
@@ -321,21 +304,21 @@ def get_combined_quality(wsp, ti, b0="3T"):
         normed = np.array(vals, dtype=np.float) / max(vals)
         wsp.quality += c * normed
 
-    wsp.best_num_vols = int(np.argmax(wsp.quality) + wsp.min_nvols)
+    wsp.best_num_vols = int(np.argmax(wsp.quality) + wsp.enable_min_nvols)
     wsp.maxqual = max(wsp.quality)
 
     wsp.log.write("Repeats\tOverall Quality\n")
     for idx, q in enumerate(wsp.quality):
-        wsp.log.write("%i\t%.3f\n" % (idx, q))
-        wsp.results[idx+wsp.min_nvols-1]["qual"] = q        
-    wsp.log.write("Maximum quality %.3f with %i repeats\n" % (wsp.maxqual, wsp.best_num_vols))
+        wsp.log.write("%i\t%.3f\n" % (idx+wsp.enable_min_nvols, q))
+        wsp.results[idx+wsp.enable_min_nvols-1]["qual"] = q        
+    wsp.log.write(" - Maximum quality %.3f with %i repeats\n" % (wsp.maxqual, wsp.best_num_vols))
         
     page = wsp.report.page("qual")
     page.heading("Cumulative overall quality by included repeats")
     page.text("Maximum overall quality achieved using %i repeats (quality score: %.3f)" % (wsp.best_num_vols, wsp.maxqual))
-    page.table([(idx+wsp.min_nvols, qual) for idx, qual in enumerate(wsp.quality)], headers=["Number of repeats", "Overall Quality"])
+    page.table([(idx+wsp.enable_min_nvols, qual) for idx, qual in enumerate(wsp.quality)], headers=["Number of repeats", "Overall Quality"])
    
-def enable(wsp):
+def run(wsp, output_wsp=None):
     """
     Remove volumes from a multi-repeat ASL data set to improve overall quality
     
@@ -346,7 +329,7 @@ def enable(wsp):
                      be provided (not just number)
      - ``gm_roi`` : Grey matter ROI in ASL space
      - ``noise_roi`` : Noise matter ROI in ASL space
-     - ``min_nvols`` : Minimum number of repeats to include from each TI
+     - ``enable_min_nvols`` : Minimum number of repeats to include from each TI
      
     Workspace attributes set
     ------------------------
@@ -363,6 +346,7 @@ def enable(wsp):
                             for this TI includes this repeat.
      - ``enable_ti_<val>`` : Sub-workspace containing output from each TI individually
     """
+    wsp.log.write("\nPerforming ENABLE volume filtering\n")
     get_rois(wsp)
 
     wsp.asldata_diff = wsp.asldata.diff().reorder("rt")
@@ -371,12 +355,12 @@ def enable(wsp):
 
     # Process each TI in turn
     for ti_idx, ti in enumerate(wsp.asldata_diff.tis):
-        wsp.log.write("\nProcessing TI: %i (%s)\n" % (ti_idx, str(ti)))
+        wsp.log.write("\n - Processing TI: %i (%s)\n" % (ti_idx+1, str(ti)))
         
         # Create workspace for TI
         wsp_ti = wsp.sub("enable_ti_%s" % (ti_idx+1), report=Report())
         wsp_ti.asldata = wsp.asldata_diff.single_ti(ti_idx)
-        wsp_ti.min_nvols = wsp.min_nvols
+        wsp_ti.enable_min_nvols = wsp.enable_min_nvols
         wsp_ti.report.title = "Quality assessment for TI %i (%.2f)" % (ti_idx+1, ti)
         wsp_ti.results = []
 
@@ -384,7 +368,7 @@ def enable(wsp):
         wsp_ti.asldata_mean = wsp_ti.asldata.mean_across_repeats()
 
         # Sorting and calculation of quality measures
-        calculate_cnr(wsp_ti, wsp.gm_roi, wsp.noise_roi)
+        calculate_cnr(wsp_ti, wsp.enable_gm_roi, wsp.enable_noise_roi)
         sort_cnr(wsp_ti)
         for orig_vol, cnr in wsp_ti.cnrs_sorted:
             wsp_ti.results.append(
@@ -392,10 +376,10 @@ def enable(wsp):
                  "tcnr" : 0.0, "detect" : 0.0, "cov" : 0.0, "tsnr" : 0.0, "qual" : 0.0}
             )
 
-        calculate_quality_measures(wsp_ti, wsp.gm_roi, wsp.noise_roi)
+        calculate_quality_measures(wsp_ti, wsp.enable_gm_roi, wsp.enable_noise_roi)
         for meas in "tcnr", "detect", "cov", "tsnr":
             for idx, val in enumerate(wsp_ti.qms[meas]):
-                wsp_ti.results[idx+wsp_ti.min_nvols-1][meas] = val
+                wsp_ti.results[idx+wsp_ti.enable_min_nvols-1][meas] = val
            
         # Get the image at which the combined quality measure has its maximum
         get_combined_quality(wsp_ti, ti)
@@ -403,12 +387,9 @@ def enable(wsp):
         # Generate data subset with maximum quality
         for idx, result in enumerate(wsp_ti.results):
             result["selected"] = idx < wsp_ti.best_num_vols
-            
-        wsp_ti.asldata.summary(wsp.log)
+
         wsp_ti.asldata_enable = wsp_ti.asldata.derived(wsp_ti.asldata_sorted.data[:, :, :, :wsp_ti.best_num_vols], 
                                                        rpts=wsp_ti.best_num_vols)
-        wsp_ti.asldata_enable.summary(wsp.log)
-
         wsp_ti.asldata_enable_mean = wsp_ti.asldata_enable.mean_across_repeats()
 
         ti_data.append(wsp_ti.asldata_enable)
@@ -423,8 +404,10 @@ def enable(wsp):
         combined_data[:, :, :, start:start+nrpts] = img.data
         start += nrpts
     wsp.asldata_enable = wsp.asldata_diff.derived(combined_data, order="rt", tis=wsp.asldata.tis, rpts=rpts)
-    wsp.log.write("\nCombined data has %i volumes (repeats at each TI: %s)\n" % (sum(rpts), str(rpts)))
-    
+    if output_wsp is not None:
+        output_wsp.asldata = wsp.asldata_enable
+    wsp.log.write(" - Combined data has %i volumes (repeats at each TI: %s)\n" % (sum(rpts), str(rpts)))
+
     # Pandas can cleverly convert list of dicts to data frame!
     wsp.enable_results = pd.DataFrame(wsp.enable_results)
             
@@ -436,7 +419,7 @@ def enable(wsp):
     page.text("Using the ENABLE output data, the repeat specification should be::")
     page.text("    %s" % " ".join(["--rpt%i=%i" % (idx+1, rpt) for idx, rpt in enumerate(rpts)]))
     
-class EnableOptions(OptionCategory):
+class Options(OptionCategory):
     """
     ENABLE option category
     """
@@ -445,13 +428,13 @@ class EnableOptions(OptionCategory):
         OptionCategory.__init__(self, "enable", **kwargs)
 
     def groups(self, parser):
-        group = IgnorableOptionGroup(parser, "ENABLE options", ignore=self.ignore)
-        group.add_option("--noise", "-n", dest="noise_roi", help="Noise ROI. If not specified, will run BET on structural image and invert the brain mask", type="image")
-        group.add_option("--noise-from-struc", help="If specified, noise ROI is assumed to be in structural image space and will be registered to ASL space", action="store_true", default=False)
-        group.add_option("--gm", dest="gm_roi", help="Grey matter ROI. If not specified, FAST will be run on the structural image", type="image")
-        group.add_option("--gm-from-struc", help="If specified, GM ROI is assumed to be in T1 image space and will be registered to ASL space", action="store_true", default=False)
-        group.add_option("--regfrom", help="Reference image in ASL space for registration and motion correction. If not specified will use middle volume of ASL data", type="image")
-        group.add_option("--min-nvols", help="Minimum number of repeats to keep for each TI", type="int", default=6)
+        group = OptionGroup(parser, "ENABLE options")
+        group.add_option("--enable-noise-roi", help="Noise ROI. If not specified, will run BET on structural image and invert the brain mask", type="image")
+        group.add_option("--enable-noise-from-struc", help="If specified, noise ROI is assumed to be in structural image space and will be registered to ASL space", action="store_true", default=False)
+        group.add_option("--enable-gm-roi", help="Grey matter ROI. If not specified, FAST will be run on the structural image", type="image")
+        group.add_option("--enable-gm-from-struc", help="If specified, GM ROI is assumed to be in T1 image space and will be registered to ASL space", action="store_true", default=False)
+        #group.add_option("--regfrom", help="Reference image in ASL space for registration and motion correction. If not specified will use middle volume of ASL data", type="image")
+        group.add_option("--enable-min-nvols", help="Minimum number of repeats to keep for each TI", type="int", default=6)
 
         return [group]
 
@@ -462,7 +445,7 @@ def main():
     try:
         parser = AslOptionParser(usage="oxasl_enable -i <ASL input file> [options...]", version=__version__)
         parser.add_category(image.AslImageOptions())
-        parser.add_category(EnableOptions())
+        parser.add_category(Options())
         parser.add_category(struc.StructuralImageOptions())
         parser.add_category(GenericOptions())
         
