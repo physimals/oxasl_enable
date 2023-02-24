@@ -1,4 +1,4 @@
 numpy
 pandas
 nibabel
-oxasl
+oxasl>=0.2
