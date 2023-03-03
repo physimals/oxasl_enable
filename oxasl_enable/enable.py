@@ -292,7 +292,7 @@ def get_combined_quality(wsp, ti, b0="3T"):
     coeffs = coef[b0]
 
     num_meas = len(wsp.qms["detect"])
-    wsp.quality = np.zeros([num_meas], dtype=np.float)
+    wsp.quality = np.zeros([num_meas], dtype=np.float32)
     for meas, vals in wsp.qms.items():
         c = np.interp([ti], sampling_plds, coeffs[meas])
 
@@ -301,7 +301,7 @@ def get_combined_quality(wsp, ti, b0="3T"):
         vals[vals == -np.inf] = 0
         vals = np.nan_to_num(vals)
 
-        normed = np.array(vals, dtype=np.float) / max(vals)
+        normed = np.array(vals, dtype=np.float32) / max(vals)
         wsp.quality += c * normed
 
     wsp.best_num_vols = int(np.argmax(wsp.quality) + wsp.enable_min_nvols)
