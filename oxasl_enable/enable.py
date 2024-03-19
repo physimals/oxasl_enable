@@ -434,7 +434,7 @@ class Options(OptionCategory):
         group.add_option("--enable-gm-roi", help="Grey matter ROI. If not specified, FAST will be run on the structural image", type="image")
         group.add_option("--enable-gm-from-struc", help="If specified, GM ROI is assumed to be in T1 image space and will be registered to ASL space", action="store_true", default=False)
         #group.add_option("--regfrom", help="Reference image in ASL space for registration and motion correction. If not specified will use middle volume of ASL data", type="image")
-        group.add_option("--enable-min-nvols", help="Minimum number of repeats to keep for each TI", type="int", default=6)
+        group.add_option("--enable-min-nvols", help="Minimum number of repeats to keep for each TI", type="int", default=2)
 
         return [group]
 
