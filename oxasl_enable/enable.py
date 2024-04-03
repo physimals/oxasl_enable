@@ -16,7 +16,7 @@ A command line tool is provided (``oxasl_enable``), also the API may be
 used directly. The main method is ``enable`` - see this method's 
 documentation for the workspace attributes that should be set.
 
-Copyright (c) 2018 University of Oxford
+Copyright (c) 2018 University of Nottingham
 """
 from __future__ import print_function
 
