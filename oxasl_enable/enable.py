@@ -74,7 +74,7 @@ def get_rois(wsp):
 
     if wsp.enable_gm_roi is None:
         wsp.log.write(" - Taking GM ROI from segmentation of structural image\n")
-        wsp.enable_gm_roi = Image((wsp.structural.gm_pv.data > 0).astype(np.int32), header=wsp.structural.struc.header)
+        wsp.enable_gm_roi = Image((wsp.structural.gm_pv.data > 0.7).astype(np.int32), header=wsp.structural.struc.header)
         wsp.enable_gm_from_struc = True
 
     if wsp.enable_noise_roi is None:
